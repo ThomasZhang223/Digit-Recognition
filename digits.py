@@ -116,13 +116,62 @@ def draw_digit():
 
 # Process the drawing
 def process_drawing(screen):
+    # Grab the pixel array (shape: width x height x 3)
     surface = pygame.surfarray.array3d(screen)
-    gray = np.dot(surface[..., :3], [0.2989, 0.587, 0.114])  # converts to grayscale
-    gray = np.transpose(gray, (1, 0))  # Transpose to match MNIST orientation
-    gray = cv2.resize(gray, (28, 28), interpolation=cv2.INTER_AREA)
-    gray = gray.astype(np.float32) / 255.0
-    gray = (gray - 0.5) / 0.5  # Normalize to [-1, 1]
-    tensor = torch.tensor(gray, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1, 1, 28, 28]
+
+    # Pygame's array3d yields shape (width, height, 3). We want (height, width, 3)
+    surface = np.transpose(surface, (1, 0, 2))
+
+    # Convert to grayscale using proper luminance weights
+    gray = cv2.cvtColor(surface, cv2.COLOR_RGB2GRAY)
+
+    # Crop to the bounding box of the drawn content to remove extra background
+    # Threshold to find non-background pixels (assume drawing is bright on dark bg)
+    _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+    coords = cv2.findNonZero(thresh)
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        roi = gray[y:y + h, x:x + w]
+    else:
+        # nothing drawn; return a blank tensor
+        roi = gray
+
+    # Resize while keeping aspect ratio, pad to 28x28
+    h, w = roi.shape
+    if h > w:
+        new_h = 20
+        new_w = int(w * (20.0 / h))
+    else:
+        new_w = 20
+        new_h = int(h * (20.0 / w))
+
+    if new_w == 0:
+        new_w = 1
+    if new_h == 0:
+        new_h = 1
+
+    resized = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Create a 28x28 canvas and paste the resized digit centered
+    canvas = np.zeros((28, 28), dtype=np.uint8)
+    x_offset = (28 - new_w) // 2
+    y_offset = (28 - new_h) // 2
+    canvas[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
+
+    # Some smoothing helps (optional)
+    canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
+
+    # In MNIST, background is black (0) and digit strokes are white (255).
+    # If the drawing has inverted colors, invert it.
+    # Use mean intensity to guess which is background.
+    if np.mean(canvas) > 127:
+        canvas = 255 - canvas
+
+    # Normalize to the same pipeline used for training: ToTensor then Normalize((0.5,), (0.5,))
+    array = canvas.astype(np.float32) / 255.0  # [0,1]
+    array = (array - 0.5) / 0.5  # normalize to [-1, 1]
+
+    tensor = torch.tensor(array, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1,1,28,28]
     return tensor
 
 
